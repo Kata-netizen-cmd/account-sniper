@@ -24,6 +24,14 @@ NAMES_TO_FIND = 30
 # Delay between Mojang API requests (avoid rate limits)
 REQUEST_DELAY = 0.6
 
+# Load 4-letter English words
+WORD_FILE = os.path.join(os.path.dirname(__file__), "four_letter_words.txt")
+try:
+    with open(WORD_FILE, "r") as f:
+        FOUR_LETTER_WORDS = [line.strip().lower() for line in f if line.strip()]
+except FileNotFoundError:
+    FOUR_LETTER_WORDS = []
+
 # ============================================================
 
 # Simple HTTP server to keep the bot alive on hosting platforms
@@ -147,6 +155,80 @@ async def findaccounts(interaction: discord.Interaction):
         embed_fail = discord.Embed(
             title="No Available Names Found",
             description=f"Checked **{checked}** names but couldn't find any available ones.\nTry again later!",
+            color=0xFF0000
+        )
+        await interaction.edit_original_response(embed=embed_fail)
+
+@bot.tree.command(name="findwords", description="Find available 4-letter English words on Minecraft")
+async def findwords(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    now = datetime.datetime.now().timestamp()
+    if user_id in cooldowns and now - cooldowns[user_id] < 30:
+        remaining = int(30 - (now - cooldowns[user_id]))
+        await interaction.response.send_message(
+            f"Wait {remaining}s before using this again.", ephemeral=True
+        )
+        return
+    cooldowns[user_id] = now
+
+    await interaction.response.defer(thinking=True)
+
+    if not FOUR_LETTER_WORDS:
+        await interaction.followup.send("Word list not found!")
+        return
+
+    embed_start = discord.Embed(
+        title="Searching for available English words...",
+        description=f"Checking **{len(FOUR_LETTER_WORDS)}** 4-letter English words against Minecraft...",
+        color=0xFFAA00
+    )
+    await interaction.followup.send(embed=embed_start)
+
+    words_to_check = random.sample(FOUR_LETTER_WORDS, min(100, len(FOUR_LETTER_WORDS)))
+    found = []
+    checked = 0
+
+    for word in words_to_check:
+        checked += 1
+        available = check_username(word)
+
+        if available is True:
+            found.append(word)
+            if len(found) % 5 == 0:
+                embed_progress = discord.Embed(
+                    title="Searching...",
+                    description=f"Found **{len(found)}** available words\nChecked **{checked}/{len(words_to_check)}** words",
+                    color=0xFFAA00
+                )
+                await interaction.edit_original_response(embed=embed_progress)
+
+        await asyncio.sleep(REQUEST_DELAY)
+
+    if found:
+        description = "**Available English Words:**\n"
+        description += " ".join(f"`{w}`" for w in found) + "\n\n"
+        description += f"---\n*Checked {checked} words, found {len(found)} available*"
+
+        embed_result = discord.Embed(
+            title=f"Found {len(found)} Available English Words!",
+            description=description,
+            color=0x00FF00,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        embed_result.set_footer(text="Words may be taken quickly - claim fast!")
+
+        for word in found[:15]:
+            embed_result.add_field(
+                name=f"`word`",
+                value=f"[NameMC](https://namemc.com/name/{word})",
+                inline=True
+            )
+
+        await interaction.edit_original_response(embed=embed_result)
+    else:
+        embed_fail = discord.Embed(
+            title="No Available Words Found",
+            description=f"Checked **{checked}** words but none were available.\nTry again later!",
             color=0xFF0000
         )
         await interaction.edit_original_response(embed=embed_fail)
