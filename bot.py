@@ -187,8 +187,15 @@ async def findwords(interaction: discord.Interaction):
     words_to_check = random.sample(FOUR_LETTER_WORDS, min(100, len(FOUR_LETTER_WORDS)))
     found = []
     checked = 0
+    word_index = 0
 
-    for word in words_to_check:
+    while not found and checked < 300:
+        if word_index >= len(words_to_check):
+            words_to_check = random.sample(FOUR_LETTER_WORDS, min(100, len(FOUR_LETTER_WORDS)))
+            word_index = 0
+
+        word = words_to_check[word_index]
+        word_index += 1
         checked += 1
         available = check_username(word)
 
@@ -197,10 +204,18 @@ async def findwords(interaction: discord.Interaction):
             if len(found) % 5 == 0:
                 embed_progress = discord.Embed(
                     title="Searching...",
-                    description=f"Found **{len(found)}** available words\nChecked **{checked}/{len(words_to_check)}** words",
+                    description=f"Found **{len(found)}** available words\nChecked **{checked}** words so far",
                     color=0xFFAA00
                 )
                 await interaction.edit_original_response(embed=embed_progress)
+
+        if checked % 10 == 0 and not found:
+            embed_progress = discord.Embed(
+                title="Searching...",
+                description=f"Checked **{checked}** words so far, still looking...",
+                color=0xFFAA00
+            )
+            await interaction.edit_original_response(embed=embed_progress)
 
         await asyncio.sleep(REQUEST_DELAY)
 
