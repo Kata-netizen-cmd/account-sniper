@@ -159,7 +159,7 @@ async def findaccounts(interaction: discord.Interaction):
         )
         await interaction.edit_original_response(embed=embed_fail)
 
-@bot.tree.command(name="findwords", description="Find available 3/4 letter English words on Minecraft (letters only)")
+@bot.tree.command(name="findwords", description="Find 30 available 3/4 letter names (letters only, no numbers)")
 async def findwords(interaction: discord.Interaction):
     user_id = interaction.user.id
     now = datetime.datetime.now().timestamp()
@@ -173,89 +173,77 @@ async def findwords(interaction: discord.Interaction):
 
     await interaction.response.defer(thinking=True)
 
-    if not ENGLISH_WORDS:
-        await interaction.followup.send("Word list not found!")
-        return
+    LETTERS = string.ascii_lowercase
+    TARGET = 30
 
     embed_start = discord.Embed(
-        title="Searching for available English words...",
-        description=f"Checking **{len(ENGLISH_WORDS)}** 3/4 letter English words (letters only)...",
+        title="Searching for available names...",
+        description=f"Generating random 3/4 letter names (letters only)...\nTarget: **{TARGET}** available names",
         color=0xFFAA00
     )
     await interaction.followup.send(embed=embed_start)
 
-    words_to_check = random.sample(ENGLISH_WORDS, min(100, len(ENGLISH_WORDS)))
     found = []
     checked = 0
-    word_index = 0
 
-    while not found and checked < 300:
-        if word_index >= len(words_to_check):
-            words_to_check = random.sample(ENGLISH_WORDS, min(100, len(ENGLISH_WORDS)))
-            word_index = 0
+    while len(found) < TARGET:
+        length = random.choice([3, 4])
+        name = ''.join(random.choices(LETTERS, k=length))
 
-        word = words_to_check[word_index]
-        word_index += 1
+        if name in [f[0] for f in found]:
+            continue
+
         checked += 1
-        available = check_username(word)
+        available = check_username(name)
 
         if available is True:
-            found.append((word, len(word)))
-            if len(found) % 5 == 0:
-                embed_progress = discord.Embed(
-                    title="Searching...",
-                    description=f"Found **{len(found)}** available words\nChecked **{checked}** words so far",
-                    color=0xFFAA00
-                )
-                await interaction.edit_original_response(embed=embed_progress)
-
-        if checked % 10 == 0 and not found:
+            found.append((name, length))
             embed_progress = discord.Embed(
                 title="Searching...",
-                description=f"Checked **{checked}** words so far, still looking...",
+                description=f"Found **{len(found)}/{TARGET}** available names\nChecked **{checked}** so far",
+                color=0xFFAA00
+            )
+            await interaction.edit_original_response(embed=embed_progress)
+
+        if checked % 50 == 0:
+            embed_progress = discord.Embed(
+                title="Searching...",
+                description=f"Found **{len(found)}/{TARGET}** available names\nChecked **{checked}** so far, still looking...",
                 color=0xFFAA00
             )
             await interaction.edit_original_response(embed=embed_progress)
 
         await asyncio.sleep(REQUEST_DELAY)
 
-    if found:
-        three_letter = [w for w, l in found if l == 3]
-        four_letter = [w for w, l in found if l == 4]
+    three_letter = [w for w, l in found if l == 3]
+    four_letter = [w for w, l in found if l == 4]
 
-        description = ""
-        if three_letter:
-            description += f"**3-Letter ({len(three_letter)}):**\n"
-            description += " ".join(f"`{w}`" for w in three_letter) + "\n\n"
-        if four_letter:
-            description += f"**4-Letter ({len(four_letter)}):**\n"
-            description += " ".join(f"`{w}`" for w in four_letter) + "\n\n"
+    description = ""
+    if three_letter:
+        description += f"**3-Letter ({len(three_letter)}):**\n"
+        description += " ".join(f"`{w}`" for w in three_letter) + "\n\n"
+    if four_letter:
+        description += f"**4-Letter ({len(four_letter)}):**\n"
+        description += " ".join(f"`{w}`" for w in four_letter) + "\n\n"
 
-        description += f"---\n*Checked {checked} words, found {len(found)} available*"
+    description += f"---\n*Checked {checked} names to find {len(found)} available*"
 
-        embed_result = discord.Embed(
-            title=f"Found {len(found)} Available English Words!",
-            description=description,
-            color=0x00FF00,
-            timestamp=datetime.datetime.now(datetime.timezone.utc)
+    embed_result = discord.Embed(
+        title=f"Found {len(found)} Available Names!",
+        description=description,
+        color=0x00FF00,
+        timestamp=datetime.datetime.now(datetime.timezone.utc)
+    )
+    embed_result.set_footer(text="Letters only - claim fast!")
+
+    for word, length in found[:15]:
+        embed_result.add_field(
+            name=f"`{word}` ({length} letters)",
+            value=f"[NameMC](https://namemc.com/name/{word})",
+            inline=True
         )
-        embed_result.set_footer(text="Letters only - no numbers/symbols. Claim fast!")
 
-        for word, length in found[:15]:
-            embed_result.add_field(
-                name=f"`{word}` ({length} letters)",
-                value=f"[NameMC](https://namemc.com/name/{word})",
-                inline=True
-            )
-
-        await interaction.edit_original_response(embed=embed_result)
-    else:
-        embed_fail = discord.Embed(
-            title="No Available Words Found",
-            description=f"Checked **{checked}** words but none were available.\nTry again later!",
-            color=0xFF0000
-        )
-        await interaction.edit_original_response(embed=embed_fail)
+    await interaction.edit_original_response(embed=embed_result)
 
 # ============================================================
 # Run the bot
