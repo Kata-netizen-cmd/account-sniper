@@ -255,8 +255,33 @@ async def findwords(interaction: discord.Interaction):
     await interaction.edit_original_response(embed=embed_result)
 
 # ============================================================
-# MONITOR SYSTEM - Watch specific names for availability
+# MONITOR SYSTEM - Auto-watch rare names, 3-letter, English words
 # ============================================================
+
+# Load English words for auto-monitor
+WORD_FILE = os.path.join(os.path.dirname(__file__), "english_words.txt")
+try:
+    with open(WORD_FILE, "r") as f:
+        ENGLISH_WORDS = [line.strip().lower() for line in f if line.strip() and line.strip().isalpha()]
+except FileNotFoundError:
+    ENGLISH_WORDS = []
+
+def generate_rare_targets():
+    """Generate a list of rare names to monitor: all 3-letter + English words"""
+    targets = set()
+    # All 3-letter combos (letters only)
+    for a in string.ascii_lowercase:
+        for b in string.ascii_lowercase:
+            for c in string.ascii_lowercase:
+                targets.add(a + b + c)
+    # Add English words
+    for word in ENGLISH_WORDS:
+        if len(word) in (3, 4):
+            targets.add(word)
+    return list(targets)
+
+monitor_index = 0
+monitor_targets = []
 
 @bot.tree.command(name="setchannel", description="Set the channel for name availability alerts")
 @app_commands.describe(channel="The channel to send alerts to")
@@ -276,7 +301,37 @@ async def setchannel(interaction: discord.Interaction, channel: discord.TextChan
     )
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="addname", description="Add a name to the watchlist")
+@bot.tree.command(name="startmonitor", description="Start auto-monitoring rare names (3-letter + English words)")
+async def startmonitor(interaction: discord.Interaction):
+    data = load_watchlist()
+    if not data["channel_id"]:
+        await interaction.response.send_message("Set an alert channel first with `/setchannel`", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Monitor Started!",
+        description=(
+            "**Auto-monitoring:**\n"
+            "- All 3-letter names (17,576)\n"
+            "- English words (3-4 letters)\n\n"
+            "**Check speed:** Every ~30 seconds\n"
+            "**Total targets:** ~20,000+ names\n\n"
+            "You'll get pinged the moment one becomes available!"
+        ),
+        color=0x00FF00
+    )
+    await interaction.response.send_message(embed=embed)
+
+    if not monitor_names.is_running():
+        monitor_names.start()
+
+@bot.tree.command(name="stopmonitor", description="Stop the name monitor")
+async def stopmonitor(interaction: discord.Interaction):
+    if monitor_names.is_running():
+        monitor_names.cancel()
+    await interaction.response.send_message("Monitor stopped.", ephemeral=True)
+
+@bot.tree.command(name="addname", description="Add a specific name to watch")
 @app_commands.describe(name="The Minecraft username to watch")
 async def addname(interaction: discord.Interaction, name: str):
     data = load_watchlist()
@@ -286,7 +341,6 @@ async def addname(interaction: discord.Interaction, name: str):
         await interaction.response.send_message(f"`{name}` is already on the watchlist.", ephemeral=True)
         return
 
-    # Check if name is taken (we watch taken names that might become available)
     status = check_username(name)
     if status is True:
         await interaction.response.send_message(f"`{name}` is already available! Claim it now!", ephemeral=True)
@@ -326,14 +380,15 @@ async def removename(interaction: discord.Interaction, name: str):
 async def watchlist(interaction: discord.Interaction):
     data = load_watchlist()
 
-    if not data["names"]:
-        await interaction.response.send_message("Watchlist is empty. Use `/addname` to add names.", ephemeral=True)
-        return
+    description = ""
+    if data["names"]:
+        description += "**Manual Watchlist:**\n"
+        for name in data["names"]:
+            description += f"• `{name}`\n"
+        description += f"*{len(data['names'])} name(s)*\n\n"
 
-    description = "**Currently Watching:**\n"
-    for name in data["names"]:
-        description += f"• `{name}`\n"
-    description += f"\n*{len(data['names'])} name(s) total*"
+    description += f"**Auto-Monitor:** All 3-letter names + English words (~20,000+)\n"
+    description += f"**Check Speed:** Every ~30 seconds"
 
     if data["channel_id"]:
         channel = bot.get_channel(data["channel_id"])
@@ -348,19 +403,32 @@ async def watchlist(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed)
 
-# Background task: check watched names every 5 minutes
-@tasks.loop(minutes=5)
-async def monitor_names():
-    data = load_watchlist()
+# Background task: check names every 30 seconds
+BATCH_SIZE = 20  # names per cycle
 
-    if not data["names"] or not data["channel_id"]:
+@tasks.loop(seconds=30)
+async def monitor_names():
+    global monitor_index, monitor_targets
+
+    data = load_watchlist()
+    if not data["channel_id"]:
         return
 
     channel = bot.get_channel(data["channel_id"])
     if not channel:
         return
 
-    for name in data["names"][:]:
+    # Build target list if empty
+    if not monitor_targets:
+        monitor_targets = generate_rare_targets()
+        random.shuffle(monitor_targets)
+        monitor_index = 0
+
+    # Also check manual watchlist
+    all_targets = list(data["names"]) + monitor_targets[monitor_index:monitor_index + BATCH_SIZE]
+    monitor_index = (monitor_index + BATCH_SIZE) % len(monitor_targets)
+
+    for name in all_targets:
         await asyncio.sleep(REQUEST_DELAY)
         available = check_username(name)
 
@@ -377,9 +445,10 @@ async def monitor_names():
             )
             await channel.send(embed=embed)
 
-            # Remove from watchlist after alert
-            data["names"].remove(name)
-            save_watchlist(data)
+            # Remove from manual watchlist if it was there
+            if name in data["names"]:
+                data["names"].remove(name)
+                save_watchlist(data)
 
 @monitor_names.before_loop
 async def before_monitor():
