@@ -1,12 +1,13 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import requests
 import random
 import string
 import asyncio
 import datetime
 import os
+import json
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -24,13 +25,19 @@ NAMES_TO_FIND = 30
 # Delay between Mojang API requests (avoid rate limits)
 REQUEST_DELAY = 0.6
 
-# Load 3-4 letter English words (letters only, no numbers/symbols)
-WORD_FILE = os.path.join(os.path.dirname(__file__), "english_words.txt")
-try:
-    with open(WORD_FILE, "r") as f:
-        ENGLISH_WORDS = [line.strip().lower() for line in f if line.strip() and line.strip().isalpha()]
-except FileNotFoundError:
-    ENGLISH_WORDS = []
+# Watchlist file
+WATCHLIST_FILE = os.path.join(os.path.dirname(__file__), "watchlist.json")
+
+def load_watchlist():
+    try:
+        with open(WATCHLIST_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"names": [], "channel_id": None}
+
+def save_watchlist(data):
+    with open(WATCHLIST_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 # ============================================================
 
@@ -71,6 +78,8 @@ def check_username(username):
 @bot.event
 async def on_ready():
     await bot.tree.sync()
+    if not monitor_names.is_running():
+        monitor_names.start()
     print(f"[OK] Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"[OK] Serving {len(bot.guilds)} server(s)")
 
@@ -244,6 +253,137 @@ async def findwords(interaction: discord.Interaction):
         )
 
     await interaction.edit_original_response(embed=embed_result)
+
+# ============================================================
+# MONITOR SYSTEM - Watch specific names for availability
+# ============================================================
+
+@bot.tree.command(name="setchannel", description="Set the channel for name availability alerts")
+@app_commands.describe(channel="The channel to send alerts to")
+async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("You need Administrator permission to use this.", ephemeral=True)
+        return
+
+    data = load_watchlist()
+    data["channel_id"] = channel.id
+    save_watchlist(data)
+
+    embed = discord.Embed(
+        title="Alert Channel Set",
+        description=f"Alerts will be sent to {channel.mention}",
+        color=0x00FF00
+    )
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="addname", description="Add a name to the watchlist")
+@app_commands.describe(name="The Minecraft username to watch")
+async def addname(interaction: discord.Interaction, name: str):
+    data = load_watchlist()
+    name = name.lower().strip()
+
+    if name in data["names"]:
+        await interaction.response.send_message(f"`{name}` is already on the watchlist.", ephemeral=True)
+        return
+
+    # Check if name is taken (we watch taken names that might become available)
+    status = check_username(name)
+    if status is True:
+        await interaction.response.send_message(f"`{name}` is already available! Claim it now!", ephemeral=True)
+        return
+
+    data["names"].append(name)
+    save_watchlist(data)
+
+    embed = discord.Embed(
+        title="Name Added to Watchlist",
+        description=f"Now watching: `{name}`\nYou'll get an alert when it becomes available.",
+        color=0x00FF00
+    )
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="removename", description="Remove a name from the watchlist")
+@app_commands.describe(name="The username to stop watching")
+async def removename(interaction: discord.Interaction, name: str):
+    data = load_watchlist()
+    name = name.lower().strip()
+
+    if name not in data["names"]:
+        await interaction.response.send_message(f"`{name}` isn't on the watchlist.", ephemeral=True)
+        return
+
+    data["names"].remove(name)
+    save_watchlist(data)
+
+    embed = discord.Embed(
+        title="Name Removed",
+        description=f"Stopped watching: `{name}`",
+        color=0xFFAA00
+    )
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="watchlist", description="View all names being watched")
+async def watchlist(interaction: discord.Interaction):
+    data = load_watchlist()
+
+    if not data["names"]:
+        await interaction.response.send_message("Watchlist is empty. Use `/addname` to add names.", ephemeral=True)
+        return
+
+    description = "**Currently Watching:**\n"
+    for name in data["names"]:
+        description += f"• `{name}`\n"
+    description += f"\n*{len(data['names'])} name(s) total*"
+
+    if data["channel_id"]:
+        channel = bot.get_channel(data["channel_id"])
+        description += f"\n**Alert Channel:** {channel.mention if channel else 'Not found'}"
+    else:
+        description += "\n**Alert Channel:** Not set (use `/setchannel`)"
+
+    embed = discord.Embed(
+        title="Watchlist",
+        description=description,
+        color=0x00FF00
+    )
+    await interaction.response.send_message(embed=embed)
+
+# Background task: check watched names every 5 minutes
+@tasks.loop(minutes=5)
+async def monitor_names():
+    data = load_watchlist()
+
+    if not data["names"] or not data["channel_id"]:
+        return
+
+    channel = bot.get_channel(data["channel_id"])
+    if not channel:
+        return
+
+    for name in data["names"][:]:
+        await asyncio.sleep(REQUEST_DELAY)
+        available = check_username(name)
+
+        if available is True:
+            embed = discord.Embed(
+                title="AVAILABLE NAME FOUND!",
+                description=f"`{name}` is now available!",
+                color=0x00FF00,
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.add_field(
+                name="Claim it now!",
+                value=f"[NameMC](https://namemc.com/name/{name})"
+            )
+            await channel.send(embed=embed)
+
+            # Remove from watchlist after alert
+            data["names"].remove(name)
+            save_watchlist(data)
+
+@monitor_names.before_loop
+async def before_monitor():
+    await bot.wait_until_ready()
 
 # ============================================================
 # Run the bot
